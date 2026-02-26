@@ -64,10 +64,10 @@ pub use prompt_guard::{GuardAction, GuardResult, PromptGuard};
 ///
 /// Currently performs credential leak detection via [`LeakDetector`]. Scans for
 /// API keys, AWS credentials, JWTs, PEM private keys, database URLs, and
-/// generic secret patterns. The `sensitivity` field only affects heuristic
-/// rules (generic passwords/secrets/tokens); structurally identifiable patterns
-/// (Stripe, OpenAI, Anthropic, GitHub, AWS, JWT, PEM, DB URLs) are always
-/// detected regardless of sensitivity.
+/// generic secret patterns. The `leak_sensitivity` config field only affects
+/// heuristic rules (generic passwords/secrets/tokens); structurally identifiable
+/// patterns (Stripe, OpenAI, Anthropic, GitHub, AWS, JWT, PEM, DB URLs) are
+/// always detected regardless of sensitivity.
 ///
 /// Future phases will add prompt-injection scanning and user-extensible
 /// guardrail traits.

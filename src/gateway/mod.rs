@@ -979,11 +979,15 @@ fn sanitize_gateway_response(
 }
 
 /// Convenience wrapper that extracts tools and guardrail config from [`AppState`].
+///
+/// Clones the small [`OutputGuardrailConfig`] so the config mutex is released
+/// before regex scanning begins.
 fn sanitize_gateway_response_from_state(response: &str, state: &AppState) -> String {
+    let guardrail_config = state.config.lock().security.output_guardrail.clone();
     sanitize_gateway_response(
         response,
         state.tools_registry_exec.as_ref(),
-        &state.config.lock().security.output_guardrail,
+        &guardrail_config,
     )
 }
 

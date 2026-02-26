@@ -2446,9 +2446,11 @@ pub(crate) fn sanitize_channel_response(
     apply_output_guardrail(&cleaned, output_guardrail)
 }
 
-/// Thin re-export of [`crate::security::apply_output_guardrail`] for backward
-/// compatibility within the crate. Prefer calling `security::apply_output_guardrail`
-/// directly from new code.
+/// Delegates to [`crate::security::apply_output_guardrail`].
+///
+/// Kept as a local helper so `sanitize_channel_response` and its tests can call
+/// it without a fully-qualified path. New call sites outside this module should
+/// use `crate::security::apply_output_guardrail` directly.
 pub(crate) fn apply_output_guardrail(
     content: &str,
     config: &crate::config::OutputGuardrailConfig,

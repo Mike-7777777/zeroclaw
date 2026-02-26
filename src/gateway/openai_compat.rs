@@ -279,9 +279,10 @@ async fn handle_non_streaming(
             record_success(&state, &provider_label, &model, duration);
 
             // Apply output guardrail (credential leak detection) before returning.
-            let guardrail_config = &state.config.lock().security.output_guardrail;
+            // Clone the small config struct so the config mutex is released immediately.
+            let guardrail_config = state.config.lock().security.output_guardrail.clone();
             let safe_text =
-                crate::security::apply_output_guardrail(&response_text, guardrail_config);
+                crate::security::apply_output_guardrail(&response_text, &guardrail_config);
 
             #[allow(clippy::cast_possible_truncation)]
             let completion_tokens = (safe_text.len() / 4) as u32;
@@ -360,9 +361,9 @@ fn handle_streaming(
                     record_success(&state, &provider_label, &model_clone, duration);
 
                     // Apply output guardrail before streaming single-chunk response.
-                    let guardrail_config = &state.config.lock().security.output_guardrail;
+                    let guardrail_config = state.config.lock().security.output_guardrail.clone();
                     let safe_text =
-                        crate::security::apply_output_guardrail(&text, guardrail_config);
+                        crate::security::apply_output_guardrail(&text, &guardrail_config);
 
                     let chunk = ChatCompletionsChunk {
                         id: id.clone(),
