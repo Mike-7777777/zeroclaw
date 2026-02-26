@@ -4229,11 +4229,33 @@ Done."#;
 
     #[test]
     fn parse_glm_style_plain_url() {
+        // Bare URLs must NOT be interpreted as tool calls (fixes #1941).
         let response = "https://example.com/api";
         let calls = parse_glm_style_tool_calls(response);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "shell");
-        assert!(calls[0].1["command"].as_str().unwrap().contains("curl"));
+        assert!(
+            calls.is_empty(),
+            "bare URLs must not be parsed as tool calls"
+        );
+    }
+
+    #[test]
+    fn parse_glm_style_ignores_urls_in_text() {
+        let response = "Reference link:\nhttps://example.com\nYou can visit it.";
+        let calls = parse_glm_style_tool_calls(response);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_calls_does_not_convert_plain_url_to_shell() {
+        let response = "Here is the link:\nhttps://example.com\nEnjoy!";
+        let (text, calls) = parse_tool_calls(response);
+        assert!(
+            calls.is_empty(),
+            "plain URL in text must not become a tool call"
+        );
+        assert!(text.contains("Here is the link:"));
+        assert!(text.contains("https://example.com"));
+        assert!(text.contains("Enjoy!"));
     }
 
     #[test]
