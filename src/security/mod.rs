@@ -65,9 +65,9 @@ pub use prompt_guard::{GuardAction, GuardResult, PromptGuard};
 /// Currently performs credential leak detection via [`LeakDetector`]. Scans for
 /// API keys, AWS credentials, JWTs, PEM private keys, database URLs, and
 /// generic secret patterns. The `leak_sensitivity` config field only affects
-/// heuristic rules (generic passwords/secrets/tokens); structurally identifiable
-/// patterns (Stripe, OpenAI, Anthropic, GitHub, AWS, JWT, PEM, DB URLs) are
-/// always detected regardless of sensitivity.
+/// generic-secret heuristic rules (`password=…`, `secret=…`, `token=…`); all
+/// other rules — including structurally identifiable API keys and generic
+/// `api_key=…` patterns — are always active regardless of sensitivity.
 ///
 /// Future phases will add prompt-injection scanning and user-extensible
 /// guardrail traits.
@@ -149,5 +149,74 @@ mod tests {
         assert_eq!(redact("ab"), "***");
         assert_eq!(redact(""), "***");
         assert_eq!(redact("12345"), "1234***");
+    }
+
+    // --- apply_output_guardrail direct tests ---
+
+    #[test]
+    fn output_guardrail_passes_clean_content() {
+        let config = crate::config::OutputGuardrailConfig::default();
+        let input = "Here is a normal response with no secrets.";
+        assert_eq!(apply_output_guardrail(input, &config), input);
+    }
+
+    #[test]
+    fn output_guardrail_redacts_leaked_credential() {
+        let mut config = crate::config::OutputGuardrailConfig::default();
+        config.leak_detection = true;
+        config.leak_action = crate::config::LeakAction::Redact;
+
+        let input = "Found key: sk_test_1234567890abcdefghijklmnop in config";
+        let result = apply_output_guardrail(input, &config);
+        assert!(
+            result.contains("[REDACTED"),
+            "redact mode should replace the leaked credential"
+        );
+        assert!(
+            !result.contains("sk_test_"),
+            "original credential must not survive redaction"
+        );
+    }
+
+    #[test]
+    fn output_guardrail_blocks_leaked_credential() {
+        let mut config = crate::config::OutputGuardrailConfig::default();
+        config.leak_detection = true;
+        config.leak_action = crate::config::LeakAction::Block;
+
+        let input = "Use this key: AKIAIOSFODNN7EXAMPLE99";
+        let result = apply_output_guardrail(input, &config);
+        assert!(
+            result.starts_with("⚠️ Response blocked"),
+            "block mode should replace entire response with a warning"
+        );
+        assert!(
+            !result.contains("AKIAIOSFODNN7EXAMPLE99"),
+            "blocked response must not contain the original credential"
+        );
+    }
+
+    #[test]
+    fn output_guardrail_warn_mode_preserves_content() {
+        let mut config = crate::config::OutputGuardrailConfig::default();
+        config.leak_detection = true;
+        config.leak_action = crate::config::LeakAction::Warn;
+
+        let input = "Use this key: sk_test_1234567890abcdefghijklmnop";
+        let result = apply_output_guardrail(input, &config);
+        assert_eq!(result, input, "warn mode should return original content");
+    }
+
+    #[test]
+    fn output_guardrail_disabled_skips_detection() {
+        let mut config = crate::config::OutputGuardrailConfig::default();
+        config.leak_detection = false;
+
+        let input = "sk_test_1234567890abcdefghijklmnop should pass through";
+        let result = apply_output_guardrail(input, &config);
+        assert_eq!(
+            result, input,
+            "disabled guardrail should return content verbatim"
+        );
     }
 }

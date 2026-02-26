@@ -2442,7 +2442,7 @@ pub(crate) fn sanitize_channel_response(
         .collect();
     let cleaned = strip_isolated_tool_json_artifacts(&without_tool_tags, &known_tool_names);
 
-    // Credential leak detection (Phase 1 of output guardrail integration).
+    // Credential leak detection.
     apply_output_guardrail(&cleaned, output_guardrail)
 }
 

@@ -389,4 +389,39 @@ MIIEowIBAAKCAQEA0ZPr5JeyVDonXsKhfq...
         // Low sensitivity should not flag generic secrets
         assert!(matches!(result, LeakResult::Clean));
     }
+
+    #[test]
+    fn sensitivity_at_threshold_does_not_fire_generic() {
+        // The condition is strict `>`, so exactly 0.5 must NOT trigger generic rules.
+        let detector = LeakDetector::with_sensitivity(GENERIC_SECRET_SENSITIVITY_THRESHOLD);
+        let content = "password=hunter2isasecret";
+        let result = detector.scan(content);
+        assert!(
+            matches!(result, LeakResult::Clean),
+            "sensitivity == threshold (0.5) should NOT activate generic-secret rules"
+        );
+    }
+
+    #[test]
+    fn sensitivity_just_above_threshold_fires_generic() {
+        let detector = LeakDetector::with_sensitivity(GENERIC_SECRET_SENSITIVITY_THRESHOLD + 0.01);
+        let content = "password=hunter2isasecret";
+        let result = detector.scan(content);
+        assert!(
+            matches!(result, LeakResult::Detected { .. }),
+            "sensitivity just above threshold should activate generic-secret rules"
+        );
+    }
+
+    #[test]
+    fn structural_api_key_detected_regardless_of_sensitivity() {
+        // Stripe key is structurally identifiable — must be caught even at zero sensitivity.
+        let detector = LeakDetector::with_sensitivity(0.0);
+        let content = "key: sk_test_1234567890abcdefghijklmnop";
+        let result = detector.scan(content);
+        assert!(
+            matches!(result, LeakResult::Detected { .. }),
+            "structural API key patterns must fire at any sensitivity level"
+        );
+    }
 }

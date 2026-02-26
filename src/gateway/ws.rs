@@ -235,11 +235,12 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
         match result {
             Ok(response) => {
+                let guardrail_config = state.config.lock().security.output_guardrail.clone();
                 let safe_response = finalize_ws_response(
                     &response,
                     &history,
                     state.tools_registry_exec.as_ref(),
-                    &state.config.lock().security.output_guardrail,
+                    &guardrail_config,
                 );
                 // Add assistant response to history
                 history.push(ChatMessage::assistant(&safe_response));
