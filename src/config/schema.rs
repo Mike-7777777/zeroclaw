@@ -5851,6 +5851,14 @@ impl Config {
             }
         }
 
+        // Output guardrail
+        let sensitivity = self.security.output_guardrail.leak_sensitivity;
+        if sensitivity.is_nan() || !(0.0..=1.0).contains(&sensitivity) {
+            anyhow::bail!(
+                "security.output_guardrail.leak_sensitivity must be between 0.0 and 1.0 (got {sensitivity})"
+            );
+        }
+
         // Scheduler
         if self.scheduler.max_concurrent == 0 {
             anyhow::bail!("scheduler.max_concurrent must be greater than 0");
@@ -10229,5 +10237,46 @@ baseline_syscalls = ["read", "write", "openat", "close"]
         let config: SecurityConfig = toml::from_str("").unwrap();
         assert!(config.output_guardrail.leak_detection);
         assert_eq!(config.output_guardrail.leak_action, LeakAction::Redact);
+    }
+
+    #[test]
+    fn output_guardrail_sensitivity_validation_rejects_out_of_range() {
+        let mut config = Config::default();
+
+        // Value > 1.0 should be rejected
+        config.security.output_guardrail.leak_sensitivity = 1.5;
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("leak_sensitivity"));
+
+        // Negative value should be rejected
+        config.security.output_guardrail.leak_sensitivity = -0.1;
+        assert!(config.validate().is_err());
+
+        // NaN should be rejected
+        config.security.output_guardrail.leak_sensitivity = f64::NAN;
+        assert!(config.validate().is_err());
+
+        // Valid boundary values should pass (reset other fields not relevant)
+        config.security.output_guardrail.leak_sensitivity = 0.0;
+        // Note: validate() may fail for other reasons in default config,
+        // so we only check that our specific validation doesn't trigger.
+        let result = config.validate();
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("leak_sensitivity"),
+                "0.0 should be a valid sensitivity"
+            );
+        }
+
+        config.security.output_guardrail.leak_sensitivity = 1.0;
+        let result = config.validate();
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("leak_sensitivity"),
+                "1.0 should be a valid sensitivity"
+            );
+        }
     }
 }

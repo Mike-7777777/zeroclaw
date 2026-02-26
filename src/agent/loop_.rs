@@ -3039,6 +3039,9 @@ pub async fn run(
             &[],
         )
         .await?;
+        // Apply output guardrail (credential leak detection) before printing single-shot response.
+        let response =
+            crate::channels::apply_output_guardrail(&response, &config.security.output_guardrail);
         final_output = response.clone();
         println!("{response}");
         observer.record_event(&ObserverEvent::TurnComplete);
