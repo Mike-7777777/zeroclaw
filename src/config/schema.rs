@@ -4121,6 +4121,57 @@ pub struct SecurityConfig {
     /// Syscall anomaly detection profile for daemon shell/process execution.
     #[serde(default)]
     pub syscall_anomaly: SyscallAnomalyConfig,
+
+    /// Output guardrail configuration for credential leak detection.
+    #[serde(default)]
+    pub output_guardrail: OutputGuardrailConfig,
+}
+
+/// Action to take when a credential leak is detected in outbound content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LeakAction {
+    /// Replace detected credentials with `[REDACTED_*]` placeholders (default).
+    #[default]
+    Redact,
+    /// Log a warning but pass the content through unmodified.
+    Warn,
+    /// Replace the entire message with a generic blocked notice.
+    Block,
+}
+
+/// Output guardrail configuration (`[security.output_guardrail]`).
+///
+/// Controls credential leak detection in outbound messages before they reach
+/// any channel (CLI, Telegram, Discord, WhatsApp, WebSocket, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OutputGuardrailConfig {
+    /// Enable credential leak detection in outbound messages. Default: `true`.
+    #[serde(default = "default_true")]
+    pub leak_detection: bool,
+
+    /// Leak detection sensitivity (0.0–1.0, higher = more aggressive).
+    /// Default: `0.7`. Reduce to avoid false positives on technical content.
+    #[serde(default = "default_leak_sensitivity")]
+    pub leak_sensitivity: f64,
+
+    /// Action on detected leaks.
+    #[serde(default)]
+    pub leak_action: LeakAction,
+}
+
+impl Default for OutputGuardrailConfig {
+    fn default() -> Self {
+        Self {
+            leak_detection: true,
+            leak_sensitivity: default_leak_sensitivity(),
+            leak_action: LeakAction::default(),
+        }
+    }
+}
+
+fn default_leak_sensitivity() -> f64 {
+    0.7
 }
 
 /// OTP validation strategy.
@@ -10147,5 +10198,36 @@ baseline_syscalls = ["read", "write", "openat", "close"]
         config
             .validate()
             .expect("disabled coordination should allow empty lead agent");
+    }
+
+    // ── Output Guardrail Config ─────────────────────────────────────
+
+    #[test]
+    fn output_guardrail_config_defaults() {
+        let config = OutputGuardrailConfig::default();
+        assert!(config.leak_detection);
+        assert!((config.leak_sensitivity - 0.7).abs() < f64::EPSILON);
+        assert_eq!(config.leak_action, LeakAction::Redact);
+    }
+
+    #[test]
+    fn output_guardrail_config_from_toml() {
+        let toml_str = r#"
+            [output_guardrail]
+            leak_detection = false
+            leak_sensitivity = 0.5
+            leak_action = "block"
+        "#;
+        let config: SecurityConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.output_guardrail.leak_detection);
+        assert!((config.output_guardrail.leak_sensitivity - 0.5).abs() < f64::EPSILON);
+        assert_eq!(config.output_guardrail.leak_action, LeakAction::Block);
+    }
+
+    #[test]
+    fn output_guardrail_config_empty_toml_uses_defaults() {
+        let config: SecurityConfig = toml::from_str("").unwrap();
+        assert!(config.output_guardrail.leak_detection);
+        assert_eq!(config.output_guardrail.leak_action, LeakAction::Redact);
     }
 }

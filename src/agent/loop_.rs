@@ -3168,6 +3168,11 @@ pub async fn run(
                     continue;
                 }
             };
+            // Apply output guardrail (credential leak detection) before sending CLI response.
+            let response = crate::channels::apply_output_guardrail(
+                &response,
+                &config.security.output_guardrail,
+            );
             final_output = response.clone();
             if let Err(e) = crate::channels::Channel::send(
                 &cli,

@@ -251,6 +251,7 @@ struct ChannelRuntimeContext {
     query_classification: crate::config::QueryClassificationConfig,
     model_routes: Vec<crate::config::ModelRouteConfig>,
     approval_manager: Arc<ApprovalManager>,
+    output_guardrail: crate::config::OutputGuardrailConfig,
 }
 
 #[derive(Clone)]
@@ -2429,13 +2430,54 @@ fn extract_tool_context_summary(history: &[ChatMessage], start_index: usize) -> 
     format!("[Used tools: {}]", tool_names.join(", "))
 }
 
-pub(crate) fn sanitize_channel_response(response: &str, tools: &[Box<dyn Tool>]) -> String {
+pub(crate) fn sanitize_channel_response(
+    response: &str,
+    tools: &[Box<dyn Tool>],
+    output_guardrail: &crate::config::OutputGuardrailConfig,
+) -> String {
     let without_tool_tags = strip_tool_call_tags(response);
     let known_tool_names: HashSet<String> = tools
         .iter()
         .map(|tool| tool.name().to_ascii_lowercase())
         .collect();
-    strip_isolated_tool_json_artifacts(&without_tool_tags, &known_tool_names)
+    let cleaned = strip_isolated_tool_json_artifacts(&without_tool_tags, &known_tool_names);
+
+    // Credential leak detection (Phase 1 of output guardrail integration).
+    apply_output_guardrail(&cleaned, output_guardrail)
+}
+
+/// Run output guardrails on content before it reaches a channel.
+///
+/// Currently applies credential leak detection; future phases will add
+/// prompt-injection scanning and user-extensible guardrail traits.
+pub(crate) fn apply_output_guardrail(
+    content: &str,
+    config: &crate::config::OutputGuardrailConfig,
+) -> String {
+    if !config.leak_detection {
+        return content.to_string();
+    }
+
+    use crate::security::{LeakDetector, LeakResult};
+
+    let detector = LeakDetector::with_sensitivity(config.leak_sensitivity);
+    match detector.scan(content) {
+        LeakResult::Clean => content.to_string(),
+        LeakResult::Detected { patterns, redacted } => {
+            tracing::warn!(
+                detected_patterns = ?patterns,
+                "output guardrail: credential leak detected in outbound message"
+            );
+            match config.leak_action {
+                crate::config::LeakAction::Redact => redacted,
+                crate::config::LeakAction::Warn => content.to_string(),
+                crate::config::LeakAction::Block => format!(
+                    "⚠️ Response blocked: potential credential leak detected ({}).",
+                    patterns.join(", ")
+                ),
+            }
+        }
+    }
 }
 
 fn is_tool_call_payload(value: &serde_json::Value, known_tool_names: &HashSet<String>) -> bool {
@@ -3089,8 +3131,11 @@ async fn process_channel_message(
                 }
             }
 
-            let sanitized_response =
-                sanitize_channel_response(&outbound_response, ctx.tools_registry.as_ref());
+            let sanitized_response = sanitize_channel_response(
+                &outbound_response,
+                ctx.tools_registry.as_ref(),
+                &ctx.output_guardrail,
+            );
             let delivered_response = if sanitized_response.is_empty()
                 && !outbound_response.trim().is_empty()
             {
@@ -4691,6 +4736,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         query_classification: config.query_classification.clone(),
         model_routes: config.model_routes.clone(),
         approval_manager: Arc::new(ApprovalManager::from_config(&config.autonomy)),
+        output_guardrail: config.security.output_guardrail.clone(),
     });
 
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages).await;
@@ -5005,6 +5051,7 @@ mod tests {
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -5059,6 +5106,7 @@ mod tests {
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -5116,6 +5164,7 @@ mod tests {
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -5791,6 +5840,7 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -5855,6 +5905,7 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -6079,6 +6130,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -6143,6 +6195,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -6216,6 +6269,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -7487,6 +7541,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -7563,6 +7618,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -7654,6 +7710,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -7891,6 +7948,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -7956,6 +8014,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -8133,6 +8192,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -8218,6 +8278,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -8315,6 +8376,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -8394,6 +8456,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -8458,6 +8521,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -8979,6 +9043,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -9069,6 +9134,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -9159,6 +9225,7 @@ BTC is currently around $65,000 based on latest tool output."#
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -9352,7 +9419,11 @@ This is an example JSON object for profile settings."#;
 {"result":{"symbol":"BTC","price_usd":65000}}
 BTC is currently around $65,000 based on latest tool output."#;
 
-        let result = sanitize_channel_response(input, &tools);
+        let result = sanitize_channel_response(
+            input,
+            &tools,
+            &crate::config::OutputGuardrailConfig::default(),
+        );
         let normalized = result
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -9790,6 +9861,7 @@ BTC is currently around $65,000 based on latest tool output."#;
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -9861,6 +9933,7 @@ BTC is currently around $65,000 based on latest tool output."#;
             approval_manager: Arc::new(ApprovalManager::from_config(
                 &crate::config::AutonomyConfig::default(),
             )),
+            output_guardrail: crate::config::OutputGuardrailConfig::default(),
         });
 
         process_channel_message(
@@ -9922,6 +9995,104 @@ BTC is currently around $65,000 based on latest tool output."#;
         assert!(
             turns.iter().all(|turn| !turn.content.contains("[IMAGE:")),
             "failed vision turn must not persist image marker content"
+        );
+    }
+
+    // ── Output Guardrail Tests ─────────────────────────────────────────
+
+    #[test]
+    fn output_guardrail_redacts_stripe_key() {
+        let config = crate::config::OutputGuardrailConfig {
+            leak_detection: true,
+            leak_sensitivity: 0.7,
+            leak_action: crate::config::LeakAction::Redact,
+        };
+        let input = "Here is the key: sk_test_1234567890abcdefghijklmnop";
+        let result = apply_output_guardrail(input, &config);
+        assert!(
+            !result.contains("sk_test_"),
+            "Stripe key should be redacted"
+        );
+        assert!(
+            result.contains("[REDACTED"),
+            "Should contain redaction marker"
+        );
+    }
+
+    #[test]
+    fn output_guardrail_redacts_aws_key() {
+        let config = crate::config::OutputGuardrailConfig::default();
+        let input = "AWS Access Key: AKIAIOSFODNN7EXAMPLE";
+        let result = apply_output_guardrail(input, &config);
+        assert!(
+            !result.contains("AKIAIOSFODNN7EXAMPLE"),
+            "AWS key should be redacted"
+        );
+    }
+
+    #[test]
+    fn output_guardrail_warn_mode_passes_through() {
+        let config = crate::config::OutputGuardrailConfig {
+            leak_detection: true,
+            leak_sensitivity: 0.7,
+            leak_action: crate::config::LeakAction::Warn,
+        };
+        let input = "Here is the key: sk_test_1234567890abcdefghijklmnop";
+        let result = apply_output_guardrail(input, &config);
+        assert_eq!(result, input, "Warn mode should pass content through");
+    }
+
+    #[test]
+    fn output_guardrail_block_mode_replaces_message() {
+        let config = crate::config::OutputGuardrailConfig {
+            leak_detection: true,
+            leak_sensitivity: 0.7,
+            leak_action: crate::config::LeakAction::Block,
+        };
+        let input = "Here is the key: sk_test_1234567890abcdefghijklmnop";
+        let result = apply_output_guardrail(input, &config);
+        assert!(
+            result.contains("blocked"),
+            "Block mode should replace entire message"
+        );
+        assert!(
+            !result.contains("sk_test_"),
+            "Block mode should not leak the key"
+        );
+    }
+
+    #[test]
+    fn output_guardrail_disabled_passes_through() {
+        let config = crate::config::OutputGuardrailConfig {
+            leak_detection: false,
+            leak_sensitivity: 0.7,
+            leak_action: crate::config::LeakAction::Redact,
+        };
+        let input = "Here is the key: sk_test_1234567890abcdefghijklmnop";
+        let result = apply_output_guardrail(input, &config);
+        assert_eq!(
+            result, input,
+            "Disabled guardrail should pass content through"
+        );
+    }
+
+    #[test]
+    fn output_guardrail_clean_content_passes_through() {
+        let config = crate::config::OutputGuardrailConfig::default();
+        let input = "The weather today is sunny and 72°F.";
+        let result = apply_output_guardrail(input, &config);
+        assert_eq!(result, input, "Clean content should pass through unchanged");
+    }
+
+    #[test]
+    fn sanitize_channel_response_integrates_leak_detection() {
+        let config = crate::config::OutputGuardrailConfig::default();
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        let input = "Your API key is sk_test_1234567890abcdefghijklmnop";
+        let result = sanitize_channel_response(input, &tools, &config);
+        assert!(
+            !result.contains("sk_test_"),
+            "Integrated pipeline should redact Stripe key"
         );
     }
 }

@@ -25,8 +25,12 @@ use axum::{
 const EMPTY_WS_RESPONSE_FALLBACK: &str =
     "Tool execution completed, but the model returned no final text response. Please ask me to summarize the result.";
 
-fn sanitize_ws_response(response: &str, tools: &[Box<dyn crate::tools::Tool>]) -> String {
-    let sanitized = crate::channels::sanitize_channel_response(response, tools);
+fn sanitize_ws_response(
+    response: &str,
+    tools: &[Box<dyn crate::tools::Tool>],
+    output_guardrail: &crate::config::OutputGuardrailConfig,
+) -> String {
+    let sanitized = crate::channels::sanitize_channel_response(response, tools, output_guardrail);
     if sanitized.is_empty() && !response.trim().is_empty() {
         "I encountered malformed tool-call output and could not produce a safe reply. Please try again."
             .to_string()
@@ -95,8 +99,9 @@ fn finalize_ws_response(
     response: &str,
     history: &[ChatMessage],
     tools: &[Box<dyn crate::tools::Tool>],
+    output_guardrail: &crate::config::OutputGuardrailConfig,
 ) -> String {
-    let sanitized = sanitize_ws_response(response, tools);
+    let sanitized = sanitize_ws_response(response, tools, output_guardrail);
     if !sanitized.trim().is_empty() {
         return sanitized;
     }
@@ -227,8 +232,12 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
         match result {
             Ok(response) => {
-                let safe_response =
-                    finalize_ws_response(&response, &history, state.tools_registry_exec.as_ref());
+                let safe_response = finalize_ws_response(
+                    &response,
+                    &history,
+                    state.tools_registry_exec.as_ref(),
+                    &state.config.lock().security.output_guardrail,
+                );
                 // Add assistant response to history
                 history.push(ChatMessage::assistant(&safe_response));
 
@@ -385,7 +394,8 @@ mod tests {
 </tool_call>
 After"#;
 
-        let result = sanitize_ws_response(input, &[]);
+        let result =
+            sanitize_ws_response(input, &[], &crate::config::OutputGuardrailConfig::default());
         let normalized = result
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -403,7 +413,11 @@ After"#;
 {"result":{"status":"scheduled"}}
 Reminder set successfully."#;
 
-        let result = sanitize_ws_response(input, &tools);
+        let result = sanitize_ws_response(
+            input,
+            &tools,
+            &crate::config::OutputGuardrailConfig::default(),
+        );
         assert_eq!(result, "Reminder set successfully.");
         assert!(!result.contains("\"name\":\"schedule\""));
         assert!(!result.contains("\"result\""));
@@ -419,7 +433,12 @@ Reminder set successfully."#;
             ),
         ];
 
-        let result = finalize_ws_response("", &history, &tools);
+        let result = finalize_ws_response(
+            "",
+            &history,
+            &tools,
+            &crate::config::OutputGuardrailConfig::default(),
+        );
         assert!(result.contains("Latest tool output:"));
         assert!(result.contains("Disk usage: 72%"));
         assert!(!result.contains("<tool_result"));
@@ -434,7 +453,12 @@ Reminder set successfully."#;
                 .to_string(),
         }];
 
-        let result = finalize_ws_response("", &history, &tools);
+        let result = finalize_ws_response(
+            "",
+            &history,
+            &tools,
+            &crate::config::OutputGuardrailConfig::default(),
+        );
         assert!(result.contains("Latest tool output:"));
         assert!(result.contains("/dev/disk3s1"));
     }
@@ -444,7 +468,12 @@ Reminder set successfully."#;
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(MockScheduleTool)];
         let history = vec![ChatMessage::system("sys")];
 
-        let result = finalize_ws_response("", &history, &tools);
+        let result = finalize_ws_response(
+            "",
+            &history,
+            &tools,
+            &crate::config::OutputGuardrailConfig::default(),
+        );
         assert_eq!(result, EMPTY_WS_RESPONSE_FALLBACK);
     }
 }
