@@ -107,9 +107,17 @@ fn finalize_ws_response(
     }
 
     if let Some(tool_output) = extract_latest_tool_output(history) {
+        let trimmed = tool_output.trim();
         // Apply output guardrail to tool output — it may contain leaked credentials.
         let safe_output =
-            crate::security::apply_output_guardrail(tool_output.trim(), output_guardrail);
+            crate::security::apply_output_guardrail(trimmed, output_guardrail);
+        // Block mode replaces content entirely with a policy message —
+        // return it directly instead of wrapping as "Latest tool output".
+        if matches!(output_guardrail.leak_action, crate::config::LeakAction::Block)
+            && safe_output != trimmed
+        {
+            return safe_output;
+        }
         let excerpt = crate::util::truncate_with_ellipsis(&safe_output, 1200);
         return format!(
             "Tool execution completed, but the model returned no final text response.\n\nLatest tool output:\n{excerpt}"
@@ -479,5 +487,64 @@ Reminder set successfully."#;
             &crate::config::OutputGuardrailConfig::default(),
         );
         assert_eq!(result, EMPTY_WS_RESPONSE_FALLBACK);
+    }
+
+    #[test]
+    fn finalize_ws_response_returns_block_message_directly_when_tool_output_blocked() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(MockScheduleTool)];
+        // Tool output contains an AWS Access Key that will trigger leak detection.
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user(
+                "[Tool results]\n<tool_result name=\"schedule\">\nKey: AKIAIOSFODNN7EXAMPLE99\n</tool_result>",
+            ),
+        ];
+
+        let config = crate::config::OutputGuardrailConfig {
+            leak_detection: true,
+            leak_action: crate::config::LeakAction::Block,
+            leak_sensitivity: 0.7,
+        };
+
+        let result = finalize_ws_response("", &history, &tools, &config);
+        // Block mode should return the policy message directly, not wrapped
+        // as "Latest tool output:".
+        assert!(
+            result.starts_with("⚠️ Response blocked"),
+            "expected direct block message, got: {result}"
+        );
+        assert!(
+            !result.contains("Latest tool output"),
+            "block message should not be wrapped as tool output"
+        );
+        assert!(
+            !result.contains("AKIAIOSFODNN7EXAMPLE99"),
+            "blocked response must not contain the credential"
+        );
+    }
+
+    #[test]
+    fn finalize_ws_response_shows_tool_output_normally_when_block_mode_but_clean_content() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(MockScheduleTool)];
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user(
+                "[Tool results]\n<tool_result name=\"schedule\">\nDisk usage: 72%\n</tool_result>",
+            ),
+        ];
+
+        let config = crate::config::OutputGuardrailConfig {
+            leak_detection: true,
+            leak_action: crate::config::LeakAction::Block,
+            leak_sensitivity: 0.7,
+        };
+
+        let result = finalize_ws_response("", &history, &tools, &config);
+        // Clean content should still display as "Latest tool output" even in Block mode.
+        assert!(
+            result.contains("Latest tool output"),
+            "clean content should use normal tool output format"
+        );
+        assert!(result.contains("Disk usage: 72%"));
     }
 }
